@@ -1,0 +1,37 @@
+version: "3.4"
+services:
+  challenge_app:
+    build: 
+      context: ./app
+      network: ext
+    links:
+      - mysqldb
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./app/:/app
+    networks:
+      - ext
+      - int
+
+  mysqldb:
+    image: mysql:5.7
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+    volumes:
+      - ./data:/var/lib/mysql-files
+      - ./db:/docker-entrypoint-initdb.d/:ro
+    networks:
+      - int
+      - ext
+
+networks:
+  ext:
+    external:
+      name: ext
+  int:
+    external:
+      name: int
+
