@@ -374,7 +374,8 @@ def metrics():
   df = pd.DataFrame(corrDict)
   #print(df)
   #print(df.T)
-  print(df.T.corr())
+  correlation = df.T.corr()
+  
   
 
 
