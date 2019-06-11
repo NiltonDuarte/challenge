@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdt
 import pandas as pd
 import math
-import datetime
+import datetime as dt
 from decimal import *
 from keras.models import Sequential
 from keras.layers import Dense
@@ -70,18 +70,65 @@ def fft_plot(prod_id="All"):
 def fill_missing_sale_date(data, start_date, end_date):
   #fill missing date with a order with 0 quantity and prev day price
   idx = 0
+  _prev = -1
+  _next = 0
   for date in pd.date_range(start=start_date, end=end_date):
     if date.date() == data[idx]["DATE_ORDER"]:
       pass
     else:
+      i = _next if idx == 0 else _prev
       filler = [{'DATE_ORDER': date.date(), 
+                 'PROD_ID': data[idx-i]["PROD_ID"],
                  'WEEKDAY(DATE_ORDER)+1' : date.isoweekday(), 
                  'SUM(QTY_ORDER)': Decimal("0"),
-                 'AVG(REVENUE/QTY_ORDER)': data[idx-1]["AVG(REVENUE/QTY_ORDER)"]}]
+                 'AVG(REVENUE/QTY_ORDER)': data[idx+i]["AVG(REVENUE/QTY_ORDER)"]}]
       data = data[:idx] + filler + data[idx:]
       #print(filler)
     idx += 1
   return data
+
+def fill_missing_comp_date(data, start_date, end_date):
+  #fill missing date with a prev day data
+  idx = 0
+  _prev = -1
+  _next = 0
+  #print(len(data))
+  #print(data[-1])
+  for date in pd.date_range(start=start_date, end=end_date):
+    if idx < len(data): #if index exist
+      #print(data[idx])
+      if type(data[idx]["DATE"]) == str:
+        data[idx]["DATE"] = dt.datetime.strptime(data[idx]["DATE"], "%d-%m-%Y").date()
+      if date.date() == data[idx]["DATE"]:
+        pass
+      else:
+        #print("filler inc")
+        i = _next if idx == 0 else _prev
+        filler = [{'DATE': date.date(), 
+                  'PROD_ID': data[idx+i]["PROD_ID"],
+                  'COMPETITOR' : data[idx+i]["COMPETITOR"],
+                  'COUNT_COMP_PRICE': 0,
+                  'MIN': data[idx+i]["AVG_COMP_PRICE"],
+                  'MAX': data[idx+i]["AVG_COMP_PRICE"],
+                  'AVG_COMP_PRICE': data[idx+i]["AVG_COMP_PRICE"],
+                  'PAY_TYPE': data[idx+i]["PAY_TYPE"]}]
+        data = data[:idx] + filler + data[idx:]
+        #print(filler)
+    else:
+      #print(data[-1])
+      i = _prev
+      filler = {'PROD_ID': data[-1]["PROD_ID"],
+                'DATE': date.date(), 
+                'COMPETITOR' : data[-1]["COMPETITOR"],
+                'COUNT_COMP_PRICE': 0,
+                'MIN': data[-1]["AVG_COMP_PRICE"],
+                'MAX': data[-1]["AVG_COMP_PRICE"],
+                'AVG_COMP_PRICE': data[-1]["AVG_COMP_PRICE"],
+                'PAY_TYPE': data[-1]["PAY_TYPE"]}
+      data.append(filler)
+      
+    idx += 1
+  return data  
 
 def plot_data(data, fit, predicts, saveName):
   #print(len(fit[0]), fit[1].shape)
@@ -106,7 +153,6 @@ def plot_data(data, fit, predicts, saveName):
   ax.xaxis.set_major_formatter(formatter)
   ax.xaxis.set_tick_params(rotation=30, labelsize=10)
   plt.savefig('{}_data_plot.png'.format(saveName))
-
 
 def first_difference(dataset):
   #takes the difference from the dataset and return. the first value is lost
@@ -238,7 +284,7 @@ def metrics():
   SELECT DATE_ORDER, PROD_ID, WEEKDAY(DATE_ORDER)+1, SUM(QTY_ORDER), AVG(REVENUE/QTY_ORDER) 
   FROM sales
   GROUP BY PROD_ID, DATE_ORDER
-  ORDER BY PROD_ID, DATE_ORDER;
+  ORDER BY DATE_ORDER;
   """
   #PROD_ID, DATE_EXTRACTION, COMPETITOR, COMPETITOR_PRICE, PAY_TYPE
   compQuery = """
@@ -247,49 +293,89 @@ def metrics():
   MIN(COMPETITOR_PRICE) as MIN, MAX(COMPETITOR_PRICE) as MAX, 
   AVG(COMPETITOR_PRICE) as AVG_COMP_PRICE, PAY_TYPE
   FROM comp_prices
-  GROUP BY comp_prices.PROD_ID, DATE, comp_prices.COMPETITOR, comp_prices.PAY_TYPE
-  ORDER BY comp_prices.PROD_ID, STR_TO_DATE(DATE, '%d-%m-%Y');
-  """
-  joinQuery = """
-  CREATE TEMPORARY TABLE IF NOT EXISTS #AggSales as (\
-  SELECT PROD_ID, DATE_ORDER, WEEKDAY(DATE_ORDER)+1 as WEEKDAY, SUM(QTY_ORDER) as SUM_QTY, \
-  AVG(REVENUE/QTY_ORDER) as AVG_PRICE \
-  GROUP BY PROD_ID, DATE_ORDER \
-  FROM sales \
-  );
-
-  CREATE TEMPORARY TABLE IF NOT EXISTS #AggComp as (\
-  SELECT PROD_ID, DATE_FORMAT(DATE_EXTRACTION, '%d-%m-%Y') as DATE, \
-  COMPETITOR, COUNT(COMPETITOR_PRICE) as COUNT_COMP_PRICE, \
-  MIN(COMPETITOR_PRICE) as MIN, MAX(COMPETITOR_PRICE) as MAX, \
-  AVG(COMPETITOR_PRICE) as AVG_COMP_PRICE, PAY_TYPE \
-  GROUP BY PROD_ID, DATE, COMPETITOR, PAY_TYPE \
-  FROM comp_prices \
-  );
-
-  SELECT *
-  FROM #AggComp
-  LEFT JOIN #AggSales ON #AggComp.PROD_ID = #AggSales.PROD_ID 
-        AND #AggComp.DATE_EXTRACTION = #AggSales.DATE_ORDER
-  GROUP BY #AggComp.PROD_ID, #AggComp.DATE, #AggComp.COMPETITOR, #AggComp.PAY_TYPE
-  ORDER BY #AggComp.PROD_ID, STR_TO_DATE(#AggComp.DATE, '%d-%m-%Y');
-
+  GROUP BY PROD_ID, DATE, COMPETITOR, PAY_TYPE
+  ORDER BY STR_TO_DATE(DATE, '%d-%m-%Y');
   """
 
   sales = db.selectQueryDB(salesQuery)
-  sales = fill_missing_sale_date(sales, sales[0]["DATE_ORDER"], sales[-1]["DATE_ORDER"])
-  print(sales[0])
-  print(len(sales))
-  salesDF = pd.DataFrame(sales)
-  print(salesDF)
+  prod_ids = set([row["PROD_ID"] for row in sales])
+  sales_by_product = {}
+  for p in prod_ids:
+    sales_by_product[p] = [row for row in sales if row["PROD_ID"] == p]
+    sales_by_product[p] = fill_missing_sale_date(sales_by_product[p], sales[0]["DATE_ORDER"], sales[-1]["DATE_ORDER"])
+  filled_sales = [item for _list in sales_by_product.values() for item in _list]
+  #print(len(filled_sales))
 
   comp = db.selectQueryDB(compQuery)
-  print(comp[-1])
-  print(len(comp))
-  compDF = pd.DataFrame(comp)
-  print(compDF)
+  prod_ids = set([row["PROD_ID"] for row in comp])
+  comp_ids = set([row["COMPETITOR"] for row in comp])
+  pay_type_ids = set([row["PAY_TYPE"] for row in comp])
+  comp_dict = {}
+  skip_index = ['C5.P8.1', 'C5.P4.1', 'C4.P1.1', 'C4.P1.2', 'C5.P6.1', 'C5.P6.2', 
+                'C2.P4.1', 'C2.P4.2', 'C5.P4.2', 'C3.P4.1', 'C3.P4.2', 'C1.P4.1', 
+                'C1.P4.2', 'C4.P5.1', 'C4.P5.2', 'C5.P5.1', 'C5.P5.2', 'C6.P5.1', 
+                'C6.P5.2', 'C4.P9.1', 'C4.P9.2', 'C5.P8.2', 'C3.P1.1', 'C3.P1.2', 
+                'C6.P1.1', 'C6.P1.2', 'C5.P3.1', 'C5.P3.2']
+  for p in prod_ids:
+    for c in comp_ids:
+      for pt in pay_type_ids:
+        index = "{}.{}.{}".format(c, p, pt)
+        
+        if index in skip_index: continue
+        temp = [row for row in comp if (row["COMPETITOR"]==c and row["PROD_ID"]==p and row["PAY_TYPE"]==pt)]
+        if len(temp) < 200:
+          skip_index.append(index)
+          #print("not enough data: "+index)
+          continue
+        #print(index)
+        comp_dict[index] = fill_missing_comp_date(temp, sales[0]["DATE_ORDER"], sales[-1]["DATE_ORDER"])
+        #print(len(comp_dict[index]))
+  filled_comp = [item for _list in comp_dict.values() for item in _list]        
+  print(skip_index)
+  print(len(skip_index))
 
+  corrDict = {}
 
+  #DATE WEEKDAY VENDOR_P1_QTY VENDOR_P1_PRICE ... VENDOR_P6_QTY VENDOR_P6_PRICE COMPETITOR_C1_P1_PT1_AVG_PRICE COMPETITOR_C1_P1_PT2_AVG_PRICE ... COMPETITOR_C6_P9_PT2_AVG_PRICE
+  for row in filled_sales:
+    #print(row)
+    date = row["DATE_ORDER"].toordinal()
+    index = str(date)
+    weekday = row["WEEKDAY(DATE_ORDER)+1"]
+    product_id = row["PROD_ID"]
+    qty = row["SUM(QTY_ORDER)"]
+    avg_price = row["AVG(REVENUE/QTY_ORDER)"]
+    qty_str = "VENDOR_{}_QTY".format(product_id)
+    price_str = "VENDOR_{}_PRICE".format(product_id)
+    
+    if not index in corrDict:
+      corrDict[index] = {} 
+
+    corrDict[index]["DATE"] = float(date)
+    corrDict[index]["WEEKDAY"] = float(weekday)
+    corrDict[index][qty_str] = float(qty)
+    corrDict[index][price_str] = float(avg_price)
+
+  for row in filled_comp:
+    date = row["DATE"].toordinal()
+    index = str(date)
+    product_id = row["PROD_ID"]
+    comp_id = row["COMPETITOR"]
+    pt_id = row["PAY_TYPE"]
+    avg_comp_price = row["AVG_COMP_PRICE"]
+    comp_price_str = "{}_{}_{}".format(comp_id, product_id, pt_id)
+
+    if not index in corrDict:
+      corrDict[index] = {} 
+
+    corrDict[index][comp_price_str] = float(avg_comp_price)
+
+  #print(corrDict["735883"])
+  df = pd.DataFrame(corrDict)
+  #print(df)
+  #print(df.T)
+  print(df.T.corr())
+  
 
 
 #fft_plot("P6")
