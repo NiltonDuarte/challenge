@@ -12,6 +12,7 @@ from keras.layers import Dense
 from keras.layers import LSTM
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error
+from statsmodels.tsa.seasonal import seasonal_decompose
 
 
 print("##################")
@@ -22,22 +23,27 @@ print("##################")
 def fft_plot(prod_id="All"):
   #plot the discrete fourier transform of the date - naively
   prodQuery = """
-  SELECT DATE_ORDER, SUM(QTY_ORDER) FROM sales
+  SELECT PROD_ID, DATE_ORDER, SUM(QTY_ORDER), AVG(REVENUE/QTY_ORDER), WEEKDAY(DATE_ORDER)+1
+  FROM sales
   WHERE PROD_ID = '{}'
   AND DATE_ORDER < '2019-10-1'
   GROUP BY DATE_ORDER
   ORDER BY DATE_ORDER;
   """
   allQuery = """
-  SELECT DATE_ORDER, SUM(QTY_ORDER) FROM sales
+  SELECT DATE_ORDER, SUM(QTY_ORDER), AVG(REVENUE/QTY_ORDER), WEEKDAY(DATE_ORDER)+1
+  FROM sales
   WHERE DATE_ORDER < '2019-10-1'
   GROUP BY DATE_ORDER
   ORDER BY DATE_ORDER;
   """
   if prod_id == "All": query=allQuery
   else: query = prodQuery
+
   ret = db.selectQueryDB(query.format(prod_id))
   sampleSize = len(ret); print("SampleSize",sampleSize)
+  ret = fill_missing_sale_date(ret, ret[0]["DATE_ORDER"], ret[-1]["DATE_ORDER"])
+  
   data = [(_["DATE_ORDER"],_["SUM(QTY_ORDER)"]) for _ in ret]
   values = [_[1] for _ in data]
 
@@ -47,7 +53,7 @@ def fft_plot(prod_id="All"):
   absFFT = np.abs(FFT)[1:]
   period = 1./np.fft.rfftfreq(len(values))[1:]
   normFFT = absFFT/np.amax(absFFT)
-  fftList = [(1./i, _) for i,_ in zip(np.fft.rfftfreq(len(values))[1:],absFFT)]
+  fftList = [(1./freq, val) for freq,val in zip(np.fft.rfftfreq(len(values))[1:],absFFT)]
 
   fig, ax = plt.subplots()
 
@@ -77,6 +83,7 @@ def fill_missing_sale_date(data, start_date, end_date):
       pass
     else:
       i = _next if idx == 0 else _prev
+      #print(data[idx-i])
       filler = [{'DATE_ORDER': date.date(), 
                  'PROD_ID': data[idx-i]["PROD_ID"],
                  'WEEKDAY(DATE_ORDER)+1' : date.isoweekday(), 
@@ -130,7 +137,7 @@ def fill_missing_comp_date(data, start_date, end_date):
     idx += 1
   return data  
 
-def plot_data(data, fit, predicts, saveName):
+def plot_data(data, fit, predicts, ylabel, saveName):
   #print(len(fit[0]), fit[1].shape)
   #print(predicts.shape)
 
@@ -152,7 +159,27 @@ def plot_data(data, fit, predicts, saveName):
   ax.xaxis.set_major_locator(loc)
   ax.xaxis.set_major_formatter(formatter)
   ax.xaxis.set_tick_params(rotation=30, labelsize=10)
+  ax.set_xlabel('Data')
+  ax.set_ylabel(ylabel)
+  plt.title(saveName)
   plt.savefig('{}_data_plot.png'.format(saveName))
+
+def plot_sales():
+  salesQuery = """
+  SELECT DATE_ORDER, SUM(QTY_ORDER), AVG(REVENUE/QTY_ORDER), AVG(QTY_ORDER)
+  FROM sales
+  GROUP BY DATE_ORDER
+  ORDER BY DATE_ORDER;
+  """
+  sales = db.selectQueryDB(salesQuery)
+  dates = [_["DATE_ORDER"] for _ in sales]
+  qty = [_["SUM(QTY_ORDER)"] for _ in sales]
+  avgprice = [_["AVG(REVENUE/QTY_ORDER)"] for _ in sales]
+  avgqty = [_["AVG(QTY_ORDER)"] for _ in sales]
+  plot_data((dates, qty), None, None, "Quantidade de protudos", "sales_qty")
+  plot_data((dates, avgprice), None, None, "Preço Médio", "sales_avg_price")
+  plot_data((dates, avgqty), None, None, "Quantidade média de produtos", "sales_avg_qty")
+
 
 def first_difference(dataset):
   #takes the difference from the dataset and return. the first value is lost
@@ -189,14 +216,17 @@ def organize_data(dataFrame, past_sight, future_sight):
   #print(ret)
   return ret
 
+def _mean(data, index):
+  values = [_[index] for _ in data]
+  return np.mean(values)
 
-def model_LSTM(prod_id, past_sight,  future_sight, epochs, batch_size):
+def model_LSTM(prod_id, past_sight,  future_sight, epochs, batch_size, units):
   """The	main	objective	is	to	create	a	model	to	predict	the	
   quantity	sold	for	 each	product	given	a	prescribed	price"""
   
-  print("Starting {}_{}_{}_{}_{}".format(prod_id, past_sight, future_sight, epochs, batch_size))
+  print("Starting {}_{}_{}_{}_{}_{}".format(prod_id, past_sight, future_sight, epochs, batch_size, units))
   query = """
-  SELECT DATE_ORDER, WEEKDAY(DATE_ORDER)+1, SUM(QTY_ORDER), AVG(REVENUE/QTY_ORDER) FROM sales
+  SELECT PROD_ID, DATE_ORDER, WEEKDAY(DATE_ORDER)+1, SUM(QTY_ORDER), AVG(REVENUE/QTY_ORDER) FROM sales
   WHERE PROD_ID = '{}'
   AND DATE_ORDER < '2019-05-01'
   GROUP BY DATE_ORDER
@@ -245,9 +275,9 @@ def model_LSTM(prod_id, past_sight,  future_sight, epochs, batch_size):
   
   #network params
   network = Sequential()
-  network.add(LSTM(50, input_shape=(x.shape[1], x.shape[2])))
+  network.add(LSTM(units, input_shape=(x.shape[1], x.shape[2])))
   network.add(Dense(future_sight))
-  network.compile(loss='mae', optimizer='adam')
+  network.compile(loss='mean_squared_error', optimizer='adam')
   #fit network
   history = network.fit(x, y, epochs=epochs, batch_size=batch_size, verbose=0, shuffle=False)
 
@@ -269,7 +299,8 @@ def model_LSTM(prod_id, past_sight,  future_sight, epochs, batch_size):
             (dates[past_sight:-test_size], fit), 
             (dates[-test_size:], predict),
              #dates[-test_size], predict, 
-             "{}_{}_{}_{}_{}".format(prod_id, past_sight, future_sight, epochs, batch_size))
+             "Quantidade de protudos",
+             "{}_{}_{}_{}_{}_{}".format(prod_id, past_sight, future_sight, epochs, batch_size, units))
 
   rmse = math.sqrt(mean_squared_error(predict, qty[-test_size:] ))
   return rmse
@@ -281,7 +312,7 @@ def metrics():
   particular	competitor	that	seems	more	important?"""
 
   salesQuery = """
-  SELECT DATE_ORDER, PROD_ID, WEEKDAY(DATE_ORDER)+1, SUM(QTY_ORDER), AVG(REVENUE/QTY_ORDER) 
+  SELECT DATE_ORDER, PROD_ID, WEEKDAY(DATE_ORDER)+1, SUM(QTY_ORDER), AVG(REVENUE/QTY_ORDER), AVG(QTY_ORDER)
   FROM sales
   GROUP BY PROD_ID, DATE_ORDER
   ORDER BY DATE_ORDER;
@@ -302,7 +333,17 @@ def metrics():
   sales_by_product = {}
   for p in prod_ids:
     sales_by_product[p] = [row for row in sales if row["PROD_ID"] == p]
+    print(len(sales_by_product[p]))
+    print("{} daily qty mean is: {}".format(p, _mean(sales_by_product[p], "SUM(QTY_ORDER)")))
+    print("{} mean price is: {}".format(p, _mean(sales_by_product[p], "AVG(REVENUE/QTY_ORDER)")))
+    print("{} avg client qty mean is: {}".format(p, _mean(sales_by_product[p], "AVG(QTY_ORDER)")))
+    sales_qty =  [float(_["SUM(QTY_ORDER)"]) for _ in sales_by_product[p]]
+    analysis = seasonal_decompose(sales_qty, model='additive', freq=7)
+    analysis.plot()
+    plt.savefig('{}_analysis.png'.format(p))
+
     sales_by_product[p] = fill_missing_sale_date(sales_by_product[p], sales[0]["DATE_ORDER"], sales[-1]["DATE_ORDER"])
+    
   filled_sales = [item for _list in sales_by_product.values() for item in _list]
   #print(len(filled_sales))
 
@@ -375,41 +416,50 @@ def metrics():
   #print(df)
   #print(df.T)
   correlation = df.T.corr()
-  
-  
 
+if False:
+  plot_sales()
 
-#fft_plot("P6")
-#fft_plot("P5")
-#fft_plot("P4")
-#fft_plot("P3")
-#fft_plot("P2")
-#fft_plot("P1")
-#fft_plot("All")
+if False:
+  metrics()
+  fft_plot("P9")
+  fft_plot("P8")
+  fft_plot("P7")
+  fft_plot("P6")
+  fft_plot("P5")
+  fft_plot("P4")
+  fft_plot("P3")
+  fft_plot("P2")
+  fft_plot("P1")
+  fft_plot("All")
 
 rmse_dict={}
-if False:
-  for P in ["P5"]:
-    for batch_size in [15, 32]:
-      for epochs in [5, 50, 500, 5000]:
-        for past_sight in [1, 5, 15]:
+if True:
+  for P in ["P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9"]:
+    for batch_size in [32]:
+      for epochs in [5000]:
+        for past_sight in [1]:
           for future_sight in [1]:
-            key = "{}_{}_{}_{}_{}".format(P, past_sight, future_sight, epochs, batch_size)
-            err = model_LSTM(P, past_sight, future_sight, epochs, batch_size)
-            print(err, flush=True)
-            rmse_dict[key] = err
+            for units in [5]:
+              key = "{}_{}_{}_{}_{}_{}".format(P, past_sight, future_sight, epochs, batch_size, units)
+              err = model_LSTM(P, past_sight, future_sight, epochs, batch_size, units)
+              print(err, flush=True)
+              rmse_dict[key] = err
 
   print(rmse_dict)
   sorted_rmse = sorted(rmse_dict.items(), key=lambda x: x[1])
   print(sorted_rmse)
-  with open('models_rmse.csv', 'w') as f:
+  with open('models_rmse.csv', 'a+') as f:
     for s in sorted_rmse:
-      f.write(s[0]+", "+s[1])
+      f.write(str(s[0])+", "+str(s[1])+"\n")
 
-if True:
-  metrics()
+
 
 
 
 db.closeDB()
 
+"""
+challenge_app_1  | {'P5_1_1_5_15_50': 291.86062865258083, 'P5_5_1_5_15_50': 253.88880432854472, 'P5_15_1_5_15_50': 206.00863541694358, 'P5_1_1_50_15_50': 180.45464314581525, 'P5_5_1_50_15_50': 170.0052887654057, 'P5_15_1_50_15_50': 172.24991171403158, 'P5_1_1_500_15_50': 130.48948731509498, 'P5_5_1_500_15_50': 146.3519134437674, 'P5_15_1_500_15_50': 164.76761334743568, 'P5_1_1_5000_15_50': 81.69812414208025, 'P5_5_1_5000_15_50': 121.96869227099165, 'P5_15_1_5000_15_50': 171.47151205446042, 'P5_1_1_5_32_50': 297.355395075467, 'P5_5_1_5_32_50': 250.7692329291358, 'P5_15_1_5_32_50': 231.22514063829513, 'P5_1_1_50_32_50': 185.21227558507658, 'P5_5_1_50_32_50': 187.127899244369, 'P5_15_1_50_32_50': 183.0240562290225, 'P5_1_1_500_32_50': 148.68017559599951, 'P5_5_1_500_32_50': 149.88947778661296, 'P5_15_1_500_32_50': 178.84582474965308, 'P5_1_1_5000_32_50': 79.33903623561281, 'P5_5_1_5000_32_50': 84.52737712146606, 'P5_15_1_5000_32_50': 199.7605221527233}
+challenge_app_1  | [('P5_1_1_5000_32_50', 79.33903623561281), ('P5_1_1_5000_15_50', 81.69812414208025), ('P5_5_1_5000_32_50', 84.52737712146606), ('P5_5_1_5000_15_50', 121.96869227099165), ('P5_1_1_500_15_50', 130.48948731509498), ('P5_5_1_500_15_50', 146.3519134437674), ('P5_1_1_500_32_50', 148.68017559599951), ('P5_5_1_500_32_50', 149.88947778661296), ('P5_15_1_500_15_50', 164.76761334743568), ('P5_5_1_50_15_50', 170.0052887654057), ('P5_15_1_5000_15_50', 171.47151205446042), ('P5_15_1_50_15_50', 172.24991171403158), ('P5_15_1_500_32_50', 178.84582474965308), ('P5_1_1_50_15_50', 180.45464314581525), ('P5_15_1_50_32_50', 183.0240562290225), ('P5_1_1_50_32_50', 185.21227558507658), ('P5_5_1_50_32_50', 187.127899244369), ('P5_15_1_5000_32_50', 199.7605221527233), ('P5_15_1_5_15_50', 206.00863541694358), ('P5_15_1_5_32_50', 231.22514063829513), ('P5_5_1_5_32_50', 250.7692329291358), ('P5_5_1_5_15_50', 253.88880432854472), ('P5_1_1_5_15_50', 291.86062865258083), ('P5_1_1_5_32_50', 297.355395075467)]
+"""
