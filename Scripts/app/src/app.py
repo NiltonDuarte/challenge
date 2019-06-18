@@ -377,6 +377,7 @@ def metrics():
 
   corrDict = {}
 
+  #Building the correlation matrix
   #DATE WEEKDAY VENDOR_P1_QTY VENDOR_P1_PRICE ... VENDOR_P6_QTY VENDOR_P6_PRICE COMPETITOR_C1_P1_PT1_AVG_PRICE COMPETITOR_C1_P1_PT2_AVG_PRICE ... COMPETITOR_C6_P9_PT2_AVG_PRICE
   qty_str_format = "VENDOR_{}_QTY"
   price_str_format = "VENDOR_{}_PRICE"
