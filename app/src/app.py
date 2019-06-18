@@ -378,16 +378,19 @@ def metrics():
   corrDict = {}
 
   #DATE WEEKDAY VENDOR_P1_QTY VENDOR_P1_PRICE ... VENDOR_P6_QTY VENDOR_P6_PRICE COMPETITOR_C1_P1_PT1_AVG_PRICE COMPETITOR_C1_P1_PT2_AVG_PRICE ... COMPETITOR_C6_P9_PT2_AVG_PRICE
+  qty_str_format = "VENDOR_{}_QTY"
+  price_str_format = "VENDOR_{}_PRICE"
   for row in filled_sales:
     #print(row)
+    
     date = row["DATE_ORDER"].toordinal()
     index = str(date)
     weekday = row["WEEKDAY(DATE_ORDER)+1"]
     product_id = row["PROD_ID"]
     qty = row["SUM(QTY_ORDER)"]
     avg_price = row["AVG(REVENUE/QTY_ORDER)"]
-    qty_str = "VENDOR_{}_QTY".format(product_id)
-    price_str = "VENDOR_{}_PRICE".format(product_id)
+    qty_str = qty_str_format.format(product_id)
+    price_str = price_str_format.format(product_id)
     
     if not index in corrDict:
       corrDict[index] = {} 
@@ -416,12 +419,26 @@ def metrics():
   #print(df)
   #print(df.T)
   correlation = df.T.corr()
+  n = 3
+  for prod in sorted(prod_ids):
+    qty_str = qty_str_format.format(prod)
+    price_str = price_str_format.format(prod)
+    qty_nlargest = correlation.nlargest(n, [qty_str]).loc[:,qty_str]
+    qty_nsmallest = correlation.nsmallest(n, [qty_str]).loc[:,qty_str]
+    price_nlargest = correlation.nlargest(n, [price_str]).loc[:,price_str]
+    price_nsmallest = correlation.nsmallest(n, [price_str]).loc[:,price_str]
+    #print(qty_nlargest)
+    #print(qty_nsmallest)
+    print(price_nlargest)
+    print(price_nsmallest)
+    print("\n \n \n")
 
 if False:
   plot_sales()
 
-if False:
+if True:
   metrics()
+if False:
   fft_plot("P9")
   fft_plot("P8")
   fft_plot("P7")
@@ -434,7 +451,7 @@ if False:
   fft_plot("All")
 
 rmse_dict={}
-if True:
+if False:
   for P in ["P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9"]:
     for batch_size in [32]:
       for epochs in [5000]:
