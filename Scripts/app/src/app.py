@@ -160,7 +160,8 @@ def plot_data(data, fit, predicts, ylabel, saveName):
   ax.xaxis.set_major_formatter(formatter)
   ax.xaxis.set_tick_params(rotation=30, labelsize=10)
   ax.set_xlabel('Data')
-  ax.set_ylabel(ylabel)
+  if ylabel != None:
+      ax.set_ylabel(ylabel)
   plt.title(saveName)
   plt.savefig('{}_data_plot.png'.format(saveName))
 
@@ -214,6 +215,16 @@ def organize_data(dataFrame, past_sight, future_sight):
   #print(cols)
   ret = pd.concat(colsX+colsY, axis=1).dropna()
   #print(ret)
+  return ret
+
+def shift_data(dataFrame, lag):
+  cpy = dataFrame.copy()
+  cols = [cpy]
+  for i in range(lag, 0, -1):
+    cols.append(cpy.rename("lag_{}".format(-i)).shift(i))
+  for i in range(1,lag+1):
+    cols.append(cpy.rename("lag_{}".format(i)).shift(-i))
+  ret = pd.concat(cols, axis=1).dropna()
   return ret
 
 def _mean(data, index):
@@ -416,11 +427,12 @@ def metrics():
     corrDict[index][comp_price_str] = float(avg_comp_price)
 
   #print(corrDict["735883"])
-  df = pd.DataFrame(corrDict)
-  #print(df)
-  #print(df.T)
-  correlation = df.T.corr()
+  corrDF = pd.DataFrame(corrDict)
+  #print(corrDF)
+  #print(corrDF.T)
+  correlation = corrDF.T.corr()
   n = 3
+  #get the n largest and smallest linear correlation values
   for prod in sorted(prod_ids):
     qty_str = qty_str_format.format(prod)
     price_str = price_str_format.format(prod)
@@ -430,9 +442,37 @@ def metrics():
     price_nsmallest = correlation.nsmallest(n, [price_str]).loc[:,price_str]
     #print(qty_nlargest)
     #print(qty_nsmallest)
-    print(price_nlargest)
-    print(price_nsmallest)
-    print("\n \n \n")
+    #print(price_nlargest)
+    #print(price_nsmallest)
+    #print("\n \n \n")
+
+  corrDF = corrDF.T
+  #print(corrDF.T.columns)
+  for prod in sorted(prod_ids):
+    for c in sorted(comp_ids):
+      for pt in sorted(pay_type_ids):
+        comp_skip_index = "{}.{}.{}".format(c, prod, pt)
+        comp_index = "{}_{}_{}".format(c, prod, pt)
+        prod_idx = price_str_format.format(prod)
+        if comp_skip_index in skip_index: continue
+
+        sales_column = corrDF[prod_idx]
+        comp_column = corrDF[comp_index]
+        #print(comp_column)
+        delayed_comp_matrix = shift_data(comp_column, 7)
+        delayed_data_matrix = pd.concat([sales_column, delayed_comp_matrix], axis=1).dropna()
+        #print(sales_column)        
+        #print(delayed_data_matrix)
+        tmp = delayed_data_matrix.corr().loc[prod_idx] #get the first column, the values of interest
+        filtered = tmp[tmp > 0.85] #filter the higher values only
+        if len(filtered) > 1:
+          name = "cross_corr_{}_{}_{}".format(prod, c, pt)
+          plot_data((range(len(sales_column)),sales_column), (range(len(comp_column)),comp_column.T), None, "Price", name)
+
+        #return
+
+        
+
 
 if False:
   plot_sales()
@@ -470,7 +510,6 @@ if False:
   with open('models_rmse.csv', 'a+') as f:
     for s in sorted_rmse:
       f.write(str(s[0])+", "+str(s[1])+"\n")
-
 
 
 
