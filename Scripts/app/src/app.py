@@ -335,6 +335,7 @@ def metrics():
   MIN(COMPETITOR_PRICE) as MIN, MAX(COMPETITOR_PRICE) as MAX, 
   AVG(COMPETITOR_PRICE) as AVG_COMP_PRICE, PAY_TYPE
   FROM comp_prices
+  WHERE DATE_EXTRACTION < '2015-10-13'
   GROUP BY PROD_ID, DATE, COMPETITOR, PAY_TYPE
   ORDER BY STR_TO_DATE(DATE, '%d-%m-%Y');
   """
@@ -375,6 +376,8 @@ def metrics():
         
         if index in skip_index: continue
         temp = [row for row in comp if (row["COMPETITOR"]==c and row["PROD_ID"]==p and row["PAY_TYPE"]==pt)]
+        for t in temp:
+          if t["MAX"]> 5000: print(t)
         if len(temp) < 200:
           skip_index.append(index)
           #print("not enough data: "+index)
@@ -412,6 +415,7 @@ def metrics():
     corrDict[index][qty_str] = float(qty)
     corrDict[index][price_str] = float(avg_price)
 
+  #print(filled_comp)
   for row in filled_comp:
     date = row["DATE"].toordinal()
     index = str(date)
@@ -419,6 +423,7 @@ def metrics():
     comp_id = row["COMPETITOR"]
     pt_id = row["PAY_TYPE"]
     avg_comp_price = row["AVG_COMP_PRICE"]
+    #if row["MAX"] > 3000: print(row)
     comp_price_str = "{}_{}_{}".format(comp_id, product_id, pt_id)
 
     if not index in corrDict:
@@ -428,7 +433,7 @@ def metrics():
 
   #print(corrDict["735883"])
   corrDF = pd.DataFrame(corrDict)
-  #print(corrDF)
+  print(corrDF)
   #print(corrDF.T)
   correlation = corrDF.T.corr()
   n = 3
@@ -458,7 +463,6 @@ def metrics():
 
         sales_column = corrDF[prod_idx]
         comp_column = corrDF[comp_index]
-        #print(comp_column)
         delayed_comp_matrix = shift_data(comp_column, 7)
         delayed_data_matrix = pd.concat([sales_column, delayed_comp_matrix], axis=1).dropna()
         #print(sales_column)        
@@ -468,6 +472,8 @@ def metrics():
         if len(filtered) > 1:
           name = "cross_corr_{}_{}_{}".format(prod, c, pt)
           plot_data((range(len(sales_column)),sales_column), (range(len(comp_column)),comp_column.T), None, "Price", name)
+          #print(comp_column)
+          #print(comp_column.T)
 
         #return
 
